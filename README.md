@@ -2,7 +2,7 @@ GateWise – ESP32 Module
 ========================
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/598b43d3-f646-415c-b839-3a20e986bd4a" alt="Lock Photo" width="30%"/>
+  <img src="https://github.com/user-attachments/assets/598b43d3-f646-415c-b839-3a20e986bd4a" alt="Lock Photo" width="30%" hspace="20"/>
   <img src="https://github.com/user-attachments/assets/b42ceb9e-f30b-454d-877d-3acafbe3890d" alt="Lock Photo 2" width="30%"/>
 </p>
 
@@ -64,8 +64,9 @@ Running
 2. Upload the firmware to your ESP32 (Arduino IDE or PlatformIO).
 3. Connect the relay to the lock and test with a signed command.
 ## Authentication and Access Control Flow
-<img width="1436" height="1447" alt="gatewise-flow" src="https://github.com/user-attachments/assets/e22b1d1d-3911-44f4-9445-a3e12f3fe69f" />
-
+<p align="center">
+  <img  width="70%"  alt="gatewise-flow" src="https://github.com/user-attachments/assets/e22b1d1d-3911-44f4-9445-a3e12f3fe69f" />
+</p>
 
 Next steps
 ----------
