@@ -7,16 +7,27 @@
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <time.h>
 
 const char* ssid = "<SSID>";
 const char* password = "<PASSWORD>";
 
-const char* mqtt_server = "<MQQT_BROKER>";
+const char* mqtt_server = "broker.hivemq.com";
+const int mqtt_port = 1883;
+
+const char* BASE_URL = "https://gatewiseiot.com";
+const int SPACE_ID = <<SPACE_ID>>;
+
+String MQTT_TOPIC = "command/" + String(SPACE_ID) + "/open-lock";
+
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 const int LOCK_PIN = 21;
 const int INTERNET_LED_PIN = 15;
+const int GREEN_LED_PIN = 22;
+const int BUTTON_PIN = 4;
 
 unsigned long lastInternetCheck = 0;
 const unsigned long checkInterval = 10000;
@@ -26,11 +37,17 @@ bool ledState = false;
 
 bool hasInternet = false;
 
-const char* PRIVATE_KEY_PEM = R"(-----BEGIN RSA PRIVATE KEY-----
------END RSA PRIVATE KEY-----)";
+bool isUnlocked = false;
+unsigned long unlockStartTime = 0;
+const unsigned long unlockDuration = 3000;
 
-const char* PUBLIC_KEY_PEM = R"(-----BEGIN PUBLIC KEY-----
------END PUBLIC KEY-----)";
+int lastButtonState = HIGH;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 50;
+
+const char* PRIVATE_KEY_PEM = "<<PRIVATE_KEY>>";
+
+const char* PUBLIC_KEY_PEM = "<<PUBLIC_KEY>>";
 
 mbedtls_ctr_drbg_context ctr_drbg;
 mbedtls_entropy_context entropy;
@@ -41,11 +58,16 @@ void setup() {
 
   pinMode(LOCK_PIN, OUTPUT);
   pinMode(INTERNET_LED_PIN, OUTPUT);
+  pinMode(GREEN_LED_PIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
   digitalWrite(LOCK_PIN, LOW);
   digitalWrite(INTERNET_LED_PIN, LOW);
+  digitalWrite(GREEN_LED_PIN, LOW);
 
   connectWiFi();
   checkInternet();
+
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
 
   mbedtls_entropy_init(&entropy);
   mbedtls_ctr_drbg_init(&ctr_drbg);
@@ -57,7 +79,7 @@ void setup() {
     Serial.println(ret);
   }
 
-  client.setServer(mqtt_server, 1883);
+  client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
 
   reconnectMQTT();
@@ -72,60 +94,89 @@ void loop() {
     checkInternet();
   }
 
-  if (client.connect("ESP32Lock")) {
-  } else {
+  if (!client.connected()) {
     reconnectMQTT();
   }
 
   client.loop();
+
+  if (isUnlocked && millis() - unlockStartTime >= unlockDuration) {
+    isUnlocked = false;
+    digitalWrite(LOCK_PIN, LOW);
+    digitalWrite(GREEN_LED_PIN, LOW);
+  }
+
+  int buttonReading = digitalRead(BUTTON_PIN);
+  if (buttonReading != lastButtonState) {
+    lastDebounceTime = millis();
+  }
+  if (millis() - lastDebounceTime > debounceDelay && buttonReading == LOW && !isUnlocked) {
+    unlock();
+  }
+  lastButtonState = buttonReading;
 
   if (millis() - lastInternetCheck > checkInterval) {
     lastInternetCheck = millis();
     checkInternet();
   }
 
-  if (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(INTERNET_LED_PIN, LOW);
-  } else if (hasInternet) {
-    digitalWrite(INTERNET_LED_PIN, HIGH);
-  } else {
-    if (millis() - lastBlink >= blinkInterval) {
-      lastBlink = millis();
-      ledState = !ledState;
-      digitalWrite(INTERNET_LED_PIN, ledState ? HIGH : LOW);
-    }
-  }
+  updateInternetLed();
 }
 
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-
+  Serial.print("Connecting WiFi");
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
+    Serial.print(".");
     attempts++;
     if (attempts >= 20) {
       ESP.restart();
     }
   }
+  Serial.println();
+  Serial.println("WiFi connected");
+  Serial.println(WiFi.localIP());
 }
 
 void checkInternet() {
-  WiFiClient client;
-  if (client.connect("clients3.google.com", 80)) {
+  WiFiClient testClient;
+  if (testClient.connect("clients3.google.com", 80)) {
     hasInternet = true;
-    client.stop();
+    testClient.stop();
   } else {
     hasInternet = false;
   }
 }
 
+void updateInternetLed() {
+  if (WiFi.status() != WL_CONNECTED) {
+    digitalWrite(INTERNET_LED_PIN, LOW);
+    return;
+  }
+  if (hasInternet) {
+    digitalWrite(INTERNET_LED_PIN, HIGH);
+    return;
+  }
+  if (millis() - lastBlink >= blinkInterval) {
+    lastBlink = millis();
+    ledState = !ledState;
+    digitalWrite(INTERNET_LED_PIN, ledState ? HIGH : LOW);
+  }
+}
+
 void reconnectMQTT() {
   while (!client.connected()) {
-    if (client.connect("ESP32Lock")) {
-      client.subscribe("command/open-lock");
+    String clientId = "ESP32Lock_" + String(SPACE_ID);
+    Serial.print("Connecting MQTT... ");
+    if (client.connect(clientId.c_str())) {
+      Serial.println("connected");
+      client.subscribe(MQTT_TOPIC.c_str());
     } else {
+      Serial.print("failed, rc=");
+      Serial.println(client.state());
       delay(2000);
     }
   }
@@ -143,9 +194,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   String signedMessage = command + ":" + String(timestamp);
 
-  if (!verifySignature(signedMessage, signature)) {
-    return;
-  }
+  if (!verifySignature(signedMessage, signature)) return;
 
   if (command == "open" && commandId != "") {
     sendConfirmation(commandId);
@@ -237,24 +286,32 @@ String signMessage(const String& message) {
 
 void sendConfirmation(const String& commandId) {
   long timestamp = time(nullptr);
+
+  if (timestamp <= 100000) {
+    Serial.println("NTP not synced yet.");
+    return;
+  }
+
   String message = "confirmed:" + commandId + ":" + String(timestamp);
   String signature = signMessage(message);
   if (signature == "") return;
-
-  HTTPClient http;
-  http.begin("<BASE_URL>/api/labs/access-confirmation");
-  http.addHeader("Content-Type", "application/json");
 
   StaticJsonDocument<512> doc;
   doc["commandId"] = commandId;
   doc["timestamp"] = timestamp;
   doc["signature"] = signature;
 
-  String payload;
-  serializeJson(doc, payload);
+  String body;
+  serializeJson(doc, body);
 
-  int code = http.POST(payload);
-  String response = http.getString();
+  WiFiClientSecure secureClient;
+  secureClient.setInsecure();
+
+  HTTPClient http;
+  http.begin(secureClient, String(BASE_URL) + "/api/spaces/access-confirmation");
+  http.addHeader("Content-Type", "application/json");
+
+  int code = http.POST(body);
   http.end();
 
   if (code == 200) {
@@ -263,7 +320,8 @@ void sendConfirmation(const String& commandId) {
 }
 
 void unlock() {
+  isUnlocked = true;
+  unlockStartTime = millis();
   digitalWrite(LOCK_PIN, HIGH);
-  delay(3000);
-  digitalWrite(LOCK_PIN, LOW);
+  digitalWrite(GREEN_LED_PIN, HIGH);
 }
