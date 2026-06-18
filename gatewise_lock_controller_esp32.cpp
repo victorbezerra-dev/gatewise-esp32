@@ -13,7 +13,7 @@
 const char* ssid = "<SSID>";
 const char* password = "<PASSWORD>";
 
-const char* mqtt_server = "broker.hivemq.com";
+const char* mqtt_server = "test.mosquitto.org";
 const int mqtt_port = 1883;
 
 const char* BASE_URL = "https://gatewiseiot.com";
@@ -24,10 +24,10 @@ String MQTT_TOPIC = "command/" + String(SPACE_ID) + "/open-lock";
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-const int LOCK_PIN = 21;
-const int INTERNET_LED_PIN = 15;
-const int GREEN_LED_PIN = 22;
-const int BUTTON_PIN = 4;
+const int LOCK_PIN = 22;
+const int INTERNET_LED_PIN = 32;
+const int GREEN_LED_PIN = 26;
+const int BUTTON_PIN = 21;
 
 unsigned long lastInternetCheck = 0;
 const unsigned long checkInterval = 10000;
